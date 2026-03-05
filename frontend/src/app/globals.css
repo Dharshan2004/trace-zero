@@ -1,0 +1,89 @@
+@import "@fontsource/jetbrains-mono/400.css";
+@import "@fontsource/jetbrains-mono/700.css";
+@import "tailwindcss";
+
+:root {
+  --bg-primary: #000000;
+  --bg-panel: #0a0a0a;
+  --bg-panel-alt: #0f0f0f;
+  --border: #333333;
+  --border-accent: #FF8C00;
+  --text-primary: #ffffff;
+  --text-amber: #FF8C00;
+  --text-green: #00C853;
+  --text-red: #FF1744;
+  --text-dim: #888888;
+  --chart-grid: #1a1a1a;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+html, body {
+  height: 100%;
+  width: 100%;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font-family: 'JetBrains Mono', 'IBM Plex Mono', 'Courier New', monospace;
+  font-size: 12px;
+  overflow: hidden;
+}
+
+.panel {
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+}
+
+.panel-header {
+  background: #0f0f0f;
+  border-bottom: 1px solid var(--border-accent);
+  padding: 4px 8px;
+  color: var(--text-amber);
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+}
+
+input, select {
+  background: #111;
+  border: 1px solid #444;
+  color: #fff;
+  font-family: inherit;
+  font-size: 12px;
+  padding: 3px 6px;
+  width: 100%;
+}
+input:focus, select:focus {
+  outline: none;
+  border-color: var(--text-amber);
+}
+
+label {
+  color: var(--text-amber);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  display: block;
+  margin-bottom: 2px;
+}
+
+.btn-go {
+  background: var(--text-amber);
+  color: #000;
+  font-family: inherit;
+  font-weight: 700;
+  font-size: 14px;
+  border: none;
+  padding: 8px 24px;
+  cursor: pointer;
+  text-transform: uppercase;
+  letter-spacing: 0.15em;
+  width: 100%;
+}
+.btn-go:hover { background: #ffaa33; }
+.btn-go:active { background: #cc7000; }
+.btn-go:disabled { background: #444; color: #888; cursor: not-allowed; }
+
+::-webkit-scrollbar { width: 4px; }
+::-webkit-scrollbar-track { background: #0a0a0a; }
+::-webkit-scrollbar-thumb { background: #333; }
