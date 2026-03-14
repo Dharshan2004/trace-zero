@@ -32,8 +32,21 @@ class SimulationConfig:
     eta_override : Optional[float]
         If provided, override calibrated temporary impact coefficient.
     data_file : Optional[str]
-        Absolute or relative path to a JSONL file for replay.
+        Absolute or relative path to a .parquet or .jsonl file for replay.
         If None or the file does not exist, synthetic data is generated.
+    latency_ms : float
+        Simulated network round-trip latency in milliseconds. Orders are
+        evaluated against the book state this many ms after the decision.
+        0.0 disables latency simulation (immediate fill at decision tick).
+    calibration_window : int
+        Number of ticks used for the rolling volatility window. The AC
+        model's kappa is recalibrated every time this many ticks elapse.
+        Set to 0 to disable rolling calibration (static, single-pass).
+    ui_throttle_ms : int
+        Minimum milliseconds between WebSocket snapshot broadcasts.
+        The simulation runs at tick-level internally; the UI only receives
+        an update every ui_throttle_ms real-time milliseconds to prevent
+        frontend thread saturation.
     """
     symbol: str = "BTCUSDT"
     total_shares: float = 1.0
@@ -43,3 +56,6 @@ class SimulationConfig:
     gamma_override: Optional[float] = None
     eta_override: Optional[float] = None
     data_file: Optional[str] = None
+    latency_ms: float = 0.0
+    calibration_window: int = 100
+    ui_throttle_ms: int = 50

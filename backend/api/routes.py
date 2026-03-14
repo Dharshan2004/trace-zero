@@ -3,10 +3,10 @@ REST API routes for Trace-Zero.
 
 Endpoints
 ---------
-GET  /api/symbols                       List available JSONL data files
+GET  /api/symbols                       List available data files (Parquet + JSONL)
 GET  /api/symbols/{symbol}/info         File metadata for a given symbol
 POST /api/simulation/run                Launch a simulation (async, returns sim_id)
-POST /api/capture                       Start a live Binance L1 capture
+POST /api/capture                       Start a live Binance L2 capture
 """
 
 from __future__ import annotations
@@ -17,19 +17,14 @@ import uuid
 from typing import Optional
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from backend.market_replay.loader import get_file_info, list_data_files
 from backend.simulation.config import SimulationConfig
-
-# Import the shared sim-store so WS can attach to running simulations
 from backend.api.ws import _sim_store
 
 router = APIRouter()
 
-# ---------------------------------------------------------------------------
-# Data directory (relative to project root)
-# ---------------------------------------------------------------------------
 _DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "data")
 
 
@@ -46,11 +41,16 @@ class SimulationRunRequest(BaseModel):
     gamma_override: Optional[float] = None
     eta_override: Optional[float] = None
     data_file: Optional[str] = None
+    latency_ms: float = Field(default=0.0, ge=0.0, description="Network round-trip latency in ms")
+    calibration_window: int = Field(default=100, ge=0, description="Rolling vol window size (0=static)")
+    ui_throttle_ms: int = Field(default=50, ge=10, description="Min ms between WebSocket snapshots")
 
 
 class CaptureRequest(BaseModel):
     symbol: str
     duration_seconds: int = 60
+    use_l2: bool = True
+    depth_levels: int = 20
 
 
 # ---------------------------------------------------------------------------
@@ -58,11 +58,6 @@ class CaptureRequest(BaseModel):
 # ---------------------------------------------------------------------------
 
 async def _run_sim_background(sim_id: str, config: SimulationConfig) -> None:
-    """
-    Background coroutine that runs the simulation and pushes results into
-    the sim_id queue so the WebSocket handler can stream them.
-    """
-    # Import here to avoid circular imports at module load time
     from backend.simulation.runner import run_simulation
 
     queue: asyncio.Queue = _sim_store[sim_id]
@@ -72,16 +67,10 @@ async def _run_sim_background(sim_id: str, config: SimulationConfig) -> None:
 
     try:
         result = await run_simulation(config, on_snapshot)
-        complete_msg = {
-            "type": "complete",
-            "result": result.to_dict(),
-        }
-        await queue.put(complete_msg)
+        await queue.put({"type": "complete", "result": result.to_dict()})
     except Exception as exc:
-        error_msg = {"type": "error", "message": str(exc)}
-        await queue.put(error_msg)
+        await queue.put({"type": "error", "message": str(exc)})
     finally:
-        # Signal that the producer is done (None sentinel)
         await queue.put(None)
 
 
@@ -92,26 +81,31 @@ async def _run_sim_background(sim_id: str, config: SimulationConfig) -> None:
 @router.get("/symbols")
 async def list_symbols() -> dict:
     """
-    Return a list of available JSONL data files in the data/ directory.
+    Return a list of available data files (Parquet preferred over JSONL).
 
-    Each entry contains the filename and the symbol derived from the name.
+    Each entry contains the filename, symbol, and format.
     """
     files = list_data_files(_DATA_DIR)
     result = []
     for fpath in files:
         fname = os.path.basename(fpath)
-        # Derive symbol from filename: BTCUSDT_60s.jsonl -> BTCUSDT
-        symbol = fname.split("_")[0] if "_" in fname else fname.replace(".jsonl", "")
-        result.append({"filename": fname, "symbol": symbol, "path": fpath})
+        ext = ".parquet" if fname.endswith(".parquet") else ".jsonl"
+        stem = fname[: -len(ext)]
+        symbol = stem.split("_")[0] if "_" in stem else stem
+        result.append({
+            "filename": fname,
+            "symbol": symbol,
+            "path": fpath,
+            "format": ext.lstrip("."),
+        })
     return {"symbols": result}
 
 
 @router.get("/symbols/{symbol}/info")
 async def get_symbol_info(symbol: str) -> dict:
     """
-    Return metadata for the first JSONL file matching the given symbol.
-
-    Raises 404 if no matching file is found.
+    Return metadata for the first file matching the given symbol.
+    Parquet files take priority over JSONL files with the same stem.
     """
     files = list_data_files(_DATA_DIR)
     matched: Optional[str] = None
@@ -125,7 +119,7 @@ async def get_symbol_info(symbol: str) -> dict:
         raise HTTPException(
             status_code=404,
             detail=f"No data file found for symbol '{symbol}'. "
-                   f"Use POST /api/capture or drop a JSONL file into data/.",
+                   f"Use POST /api/capture or drop a .parquet/.jsonl file into data/.",
         )
 
     try:
@@ -158,12 +152,12 @@ async def start_simulation(
         gamma_override=body.gamma_override,
         eta_override=body.eta_override,
         data_file=body.data_file,
+        latency_ms=body.latency_ms,
+        calibration_window=body.calibration_window,
+        ui_throttle_ms=body.ui_throttle_ms,
     )
 
-    # Create the queue before starting the background task so the WS
-    # handler can find it even if it connects very quickly.
     _sim_store[sim_id] = asyncio.Queue()
-
     background_tasks.add_task(_run_sim_background, sim_id, config)
 
     return {"sim_id": sim_id}
@@ -172,16 +166,25 @@ async def start_simulation(
 @router.post("/capture")
 async def capture_data(body: CaptureRequest, background_tasks: BackgroundTasks) -> dict:
     """
-    Start a live Binance L1 capture in the background.
+    Start a live Binance capture in the background.
 
-    The data is written to data/{symbol}_{duration}s.jsonl.
+    With use_l2=True (default) captures L2 depth20 + bookTicker combined stream
+    and writes to data/{symbol}_{duration}s.parquet.
+    With use_l2=False falls back to L1-only bookTicker stream.
     """
-    from backend.market_replay.collector import capture_binance_l1
+    from backend.market_replay.collector import capture_binance_l1, capture_binance_l2
 
-    output_path = os.path.join(_DATA_DIR, f"{body.symbol}_{body.duration_seconds}s.jsonl")
+    ext = ".parquet"
+    output_path = os.path.join(_DATA_DIR, f"{body.symbol}_{body.duration_seconds}s{ext}")
 
     async def _capture() -> None:
-        await capture_binance_l1(body.symbol, body.duration_seconds, output_path)
+        if body.use_l2:
+            await capture_binance_l2(
+                body.symbol, body.duration_seconds, output_path,
+                depth_levels=body.depth_levels,
+            )
+        else:
+            await capture_binance_l1(body.symbol, body.duration_seconds, output_path)
 
     background_tasks.add_task(_capture)
 
@@ -189,5 +192,6 @@ async def capture_data(body: CaptureRequest, background_tasks: BackgroundTasks) 
         "status": "capturing",
         "symbol": body.symbol,
         "duration_seconds": body.duration_seconds,
+        "mode": "L2" if body.use_l2 else "L1",
         "output_file": output_path,
     }

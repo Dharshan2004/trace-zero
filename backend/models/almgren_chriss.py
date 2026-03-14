@@ -143,28 +143,49 @@ class AlmgrenChriss:
         """
         Return the N-element array of optimal trade sizes (shares sold per step)
         following the AC closed-form trajectory.
-        """
-        trade_list = np.zeros(self.num_n)
-        sinh_kT = np.sinh(self.kappa * self.liquidation_time)
 
-        if abs(sinh_kT) < 1e-30:
-            # Degenerate: uniform liquidation
+        Numerical guard
+        ---------------
+        When kappa * T is large (e.g. N=1000 with small tau and high sigma),
+        sinh(kappa * T) overflows to inf, making every trade qty = 0.  We
+        detect this and fall back to the appropriate degenerate schedule:
+          - kappa * T > threshold (very front-loaded)  → dump (sell all at step 0)
+          - kappa * T ≈ 0         (very back-loaded)   → uniform (TWAP)
+        """
+        # Clamp kappa * T to prevent float overflow in sinh/cosh (sinh(710) ≈ 5e307)
+        _kT = self.kappa * self.liquidation_time
+        _kt_half = 0.5 * self.kappa * self.tau
+
+        if _kT > 700:
+            # Extremely front-loaded: AC degenerates toward immediate liquidation
+            schedule = np.zeros(self.num_n)
+            schedule[0] = self.total_shares
+            return schedule
+
+        sinh_kT = np.sinh(_kT)
+
+        if abs(sinh_kT) < 1e-30 or not np.isfinite(sinh_kT):
+            # kappa ≈ 0: schedule is flat (TWAP limit)
             return np.full(self.num_n, self.total_shares / self.num_n)
 
-        ftn = 2 * np.sinh(0.5 * self.kappa * self.tau)
+        ftn = 2 * np.sinh(_kt_half)
         ft = (ftn / sinh_kT) * self.total_shares
 
+        trade_list = np.zeros(self.num_n)
         for i in range(1, self.num_n + 1):
-            st = np.cosh(self.kappa * (self.liquidation_time - (i - 0.5) * self.tau))
-            trade_list[i - 1] = st
+            arg = self.kappa * (self.liquidation_time - (i - 0.5) * self.tau)
+            # cosh can also overflow for large kappa; clamp arg symmetrically
+            trade_list[i - 1] = np.cosh(min(arg, 700.0))
 
         trade_list *= ft
 
-        # Safety: ensure non-negative and rescale to exact total
         trade_list = np.maximum(trade_list, 0.0)
         total = trade_list.sum()
-        if total > 0:
+        if total > 1e-30:
             trade_list = trade_list * (self.total_shares / total)
+        else:
+            # All weights collapsed to zero — fall back to uniform
+            return np.full(self.num_n, self.total_shares / self.num_n)
 
         return trade_list
 
@@ -174,6 +195,38 @@ class AlmgrenChriss:
         V = sigma2 * sum(n_k^2) where n_k is shares sold at step k.
         """
         return float(np.sum((trades ** 2) * self.singleStepVariance))
+
+    def recalibrate(self, sigma2: float, epsilon: float) -> None:
+        """
+        Rolling recalibration: update volatility and half-spread estimates,
+        then recompute kappa so the optimal schedule adapts to current
+        market conditions (heteroscedasticity correction).
+
+        Called by the runner every `calibration_window` ticks with the
+        rolling-window variance of mid-price log-returns.
+
+        Parameters
+        ----------
+        sigma2 : float
+            New per-tau price variance estimate (price² units).
+        epsilon : float
+            New half-spread estimate (absolute price units).
+        """
+        self.singleStepVariance = sigma2
+        self.epsilon = epsilon
+        self.config.sigma2 = sigma2
+        self.config.epsilon = epsilon
+
+        # Recompute eta_hat with updated epsilon (gamma and eta unchanged)
+        self.eta_hat = self.eta - 0.5 * self.gamma * self.tau
+        if self.eta_hat <= 0:
+            self.eta_hat = max(self.eta * 0.01, 1e-12)
+
+        kappa_hat_sq = (self.llambda * sigma2) / self.eta_hat
+        self.kappa_hat = np.sqrt(max(kappa_hat_sq, 0.0))
+
+        cosh_arg = (self.kappa_hat ** 2 * self.tau ** 2) / 2.0 + 1.0
+        self.kappa = np.arccosh(max(cosh_arg, 1.0)) / self.tau
 
 
 # ---------------------------------------------------------------------------

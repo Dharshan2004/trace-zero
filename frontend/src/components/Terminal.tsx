@@ -15,7 +15,7 @@ export default function Terminal() {
     <div style={{
       display: 'grid',
       gridTemplateRows: '32px 1fr 140px',
-      gridTemplateColumns: '220px 1fr 280px',
+      gridTemplateColumns: '220px 1fr 380px',
       height: '100vh',
       width: '100vw',
       gap: '1px',
@@ -25,6 +25,7 @@ export default function Terminal() {
       <TopBar
         symbol={sim.config.symbol}
         status={sim.status}
+        dataMode={sim.dataMode}
         style={{ gridColumn: '1 / -1', gridRow: '1' }}
       />
       <SimulationForm

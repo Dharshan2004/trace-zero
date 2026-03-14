@@ -6,6 +6,7 @@ import type { CSSProperties } from 'react'
 interface TopBarProps {
   symbol: string
   status: SimStatus
+  dataMode?: 'l2_real' | 'l2_synthetic' | 'l1' | null
   style?: CSSProperties
 }
 
@@ -25,7 +26,13 @@ const STATUS_CONFIG: Record<SimStatus, { label: string; color: string }> = {
   error:    { label: 'ERROR',    color: '#FF1744' },
 }
 
-export default function TopBar({ symbol, status, style }: TopBarProps) {
+const DATA_MODE_CONFIG = {
+  l2_real:      { label: 'L2 LIVE', color: '#00C853' },
+  l2_synthetic: { label: 'L2 SYN',  color: '#FF8C00' },
+  l1:           { label: 'L1',      color: '#FF1744' },
+}
+
+export default function TopBar({ symbol, status, dataMode, style }: TopBarProps) {
   const [now, setNow] = useState(new Date())
   const [blink, setBlink] = useState(true)
 
@@ -51,6 +58,15 @@ export default function TopBar({ symbol, status, style }: TopBarProps) {
           <span style={{ display: 'inline-block', width: 6, height: 6, background: color, opacity: status === 'running' ? (blink ? 1 : 0.2) : 1 }} />
           <span style={{ color, fontSize: '11px', fontWeight: 700, letterSpacing: '0.1em' }}>{label}</span>
         </div>
+        {dataMode && (() => {
+          const dm = DATA_MODE_CONFIG[dataMode]
+          return (
+            <>
+              <span style={{ color: '#444' }}>|</span>
+              <span style={{ color: dm.color, fontSize: '10px', fontWeight: 700, letterSpacing: '0.08em', border: `1px solid ${dm.color}`, padding: '1px 4px' }}>{dm.label}</span>
+            </>
+          )
+        })()}
       </div>
       <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
         <span style={{ color: '#555', fontSize: '10px' }}>OPTIMAL EXECUTION SIMULATOR</span>

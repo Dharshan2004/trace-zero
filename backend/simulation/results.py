@@ -5,7 +5,7 @@ StrategyResult holds the per-strategy metrics. SimulationResult is the
 top-level object returned by the runner and serialized for the API.
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
 from backend.engine.order import Fill
@@ -20,7 +20,7 @@ class StrategyResult:
     Attributes
     ----------
     name : str
-        Strategy identifier ('dump', 'twap', 'ac').
+        Strategy identifier ('dump', 'twap', 'vwap', 'ac').
     fills : list[Fill]
         All fills executed by this strategy.
     vwap : float
@@ -62,7 +62,7 @@ class StrategyResult:
 @dataclass
 class SimulationResult:
     """
-    Complete output of one simulation run covering all three strategies.
+    Complete output of one simulation run covering all four strategies.
 
     Attributes
     ----------
@@ -71,20 +71,23 @@ class SimulationResult:
     dump : StrategyResult
         Results for the panic-dump strategy.
     twap : StrategyResult
-        Results for TWAP.
+        Results for TWAP (naive equal-slice baseline).
+    vwap : StrategyResult
+        Results for VWAP (volume-profile-weighted, industry standard).
     ac : StrategyResult
         Results for AC optimal strategy.
     price_series : list[dict]
         Raw price feed used during simulation:
         [{timestamp_ms, mid, bid, ask}, ...].
     ac_savings_vs_dump_bps : float
-        IS(dump) - IS(ac) in basis points — positive means AC saved cost.
+        IS(dump) - IS(ac) in basis points.
     ac_savings_vs_twap_bps : float
         IS(twap) - IS(ac) in basis points.
     """
     config: SimulationConfig
     dump: StrategyResult
     twap: StrategyResult
+    vwap: StrategyResult
     ac: StrategyResult
     price_series: list[dict]
     ac_savings_vs_dump_bps: float
@@ -99,10 +102,13 @@ class SimulationResult:
                 "liquidation_time": self.config.liquidation_time,
                 "num_trades": self.config.num_trades,
                 "risk_aversion": self.config.risk_aversion,
+                "latency_ms": self.config.latency_ms,
+                "calibration_window": self.config.calibration_window,
             },
             "strategies": {
                 "dump": self.dump.to_dict(),
                 "twap": self.twap.to_dict(),
+                "vwap": self.vwap.to_dict(),
                 "ac": self.ac.to_dict(),
             },
             "price_series": self.price_series,

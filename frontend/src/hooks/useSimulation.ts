@@ -11,6 +11,9 @@ export interface SimConfig {
   risk_aversion: number
   gamma_override?: number
   eta_override?: number
+  latency_ms?: number
+  calibration_window?: number
+  ui_throttle_ms?: number
 }
 
 export interface PricePoint {
@@ -24,6 +27,7 @@ export interface TrajectoryPoint {
   time: number
   dump: number
   twap: number
+  vwap: number
   ac: number
 }
 
@@ -31,6 +35,7 @@ export interface CostPoint {
   time: number
   dump: number
   twap: number
+  vwap: number
   ac: number
 }
 
@@ -46,14 +51,19 @@ export interface FillEvent {
 export interface TearSheetResult {
   dump: { vwap: number; shortfall_bps: number; variance: number; utility: number }
   twap: { vwap: number; shortfall_bps: number; variance: number; utility: number }
+  vwap: { vwap: number; shortfall_bps: number; variance: number; utility: number }
   ac:   { vwap: number; shortfall_bps: number; variance: number; utility: number }
   ac_savings_vs_dump_bps: number
   ac_savings_vs_twap_bps: number
 }
 
-/** Map API result (strategies.*, implementation_shortfall_bps, trajectory_variance) to TearSheetResult */
 function normalizeResult(api: {
-  strategies?: { dump?: Record<string, unknown>; twap?: Record<string, unknown>; ac?: Record<string, unknown> }
+  strategies?: {
+    dump?: Record<string, unknown>
+    twap?: Record<string, unknown>
+    vwap?: Record<string, unknown>
+    ac?: Record<string, unknown>
+  }
   ac_savings_vs_dump_bps?: number
   ac_savings_vs_twap_bps?: number
 }): TearSheetResult {
@@ -66,7 +76,8 @@ function normalizeResult(api: {
   return {
     dump: map(api.strategies?.dump),
     twap: map(api.strategies?.twap),
-    ac: map(api.strategies?.ac),
+    vwap: map(api.strategies?.vwap),
+    ac:   map(api.strategies?.ac),
     ac_savings_vs_dump_bps: Number(api.ac_savings_vs_dump_bps ?? 0),
     ac_savings_vs_twap_bps: Number(api.ac_savings_vs_twap_bps ?? 0),
   }
@@ -80,12 +91,16 @@ export function useSimulation() {
     liquidation_time: 60,
     num_trades: 20,
     risk_aversion: 1e-6,
+    latency_ms: 0,
+    calibration_window: 100,
+    ui_throttle_ms: 50,
   })
   const [priceData, setPriceData] = useState<PricePoint[]>([])
   const [trajectoryData, setTrajectoryData] = useState<TrajectoryPoint[]>([])
   const [costData, setCostData] = useState<CostPoint[]>([])
   const [allFills, setAllFills] = useState<FillEvent[]>([])
   const [result, setResult] = useState<TearSheetResult | null>(null)
+  const [dataMode, setDataMode] = useState<'l2_real' | 'l2_synthetic' | 'l1' | null>(null)
   const wsRef = useRef<WebSocket | null>(null)
   const statusRef = useRef<SimStatus>('idle')
 
@@ -100,6 +115,7 @@ export function useSimulation() {
     setCostData([])
     setAllFills([])
     setResult(null)
+    setDataMode(null)
 
     try {
       const res = await fetch('/api/simulation/run', {
@@ -111,7 +127,6 @@ export function useSimulation() {
 
       const { sim_id } = await res.json()
 
-      // WebSocket must connect directly to backend (Next.js rewrites don't support WS upgrade)
       const ws = new WebSocket(`ws://localhost:8000/api/simulation/${sim_id}/stream`)
       wsRef.current = ws
 
@@ -128,18 +143,21 @@ export function useSimulation() {
                 ask: msg.ask ?? msg.mid_price,
               }])
             }
+            if (msg.data_mode) setDataMode(msg.data_mode)
             if (msg.strategies) {
               const t = Math.floor(msg.timestamp_ms / 1000)
               setTrajectoryData(prev => [...prev, {
                 time: t,
-                dump: msg.strategies.dump?.shares_remaining ?? 0,
-                twap: msg.strategies.twap?.shares_remaining ?? 0,
-                ac:   msg.strategies.ac?.shares_remaining ?? 0,
+                dump: msg.strategies.dump?.qty_traded ?? 0,
+                twap: msg.strategies.twap?.qty_traded ?? 0,
+                vwap: msg.strategies.vwap?.qty_traded ?? 0,
+                ac:   msg.strategies.ac?.qty_traded ?? 0,
               }])
               setCostData(prev => [...prev, {
                 time: t,
                 dump: msg.strategies.dump?.cumulative_cost_bps ?? 0,
                 twap: msg.strategies.twap?.cumulative_cost_bps ?? 0,
+                vwap: msg.strategies.vwap?.cumulative_cost_bps ?? 0,
                 ac:   msg.strategies.ac?.cumulative_cost_bps ?? 0,
               }])
             }
@@ -147,6 +165,17 @@ export function useSimulation() {
               setAllFills(prev => [...prev, ...msg.new_fills])
             }
           } else if (msg.type === 'complete') {
+            // Hydrate the price chart from the full price_series in the result
+            // (the WebSocket throttle may have only delivered a few live snapshots)
+            const series = msg.result?.price_series
+            if (Array.isArray(series) && series.length > 0) {
+              setPriceData(series.map((p: { timestamp_ms: number; mid: number; bid: number; ask: number }) => ({
+                time: Math.floor(p.timestamp_ms / 1000),
+                mid: p.mid,
+                bid: p.bid,
+                ask: p.ask,
+              })))
+            }
             setResult(normalizeResult(msg.result ?? {}))
             setStatus('complete')
             statusRef.current = 'complete'
@@ -165,5 +194,5 @@ export function useSimulation() {
     }
   }, [])
 
-  return { status, config, priceData, trajectoryData, costData, fills: allFills, allFills, result, start }
+  return { status, config, priceData, trajectoryData, costData, fills: allFills, allFills, result, dataMode, start }
 }
