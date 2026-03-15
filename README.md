@@ -469,7 +469,7 @@ This project was built as part of the **[ProjectHub Mentorship Program 25/26](ht
 | | Name | GitHub | Role |
 |---|------|--------|------|
 | <img src="https://github.com/Dharshan2004.png" width="32" style="border-radius:50%" /> | Kannan Priyadharshan | [@Dharshan2004](https://github.com/Dharshan2004) | Lead Engineer |
-| <img src="https://github.com/AryaVasta.png" width="32" style="border-radius:50%" /> | Arya Vasta | [@AryaVasta](https://github.com/AryaVasta) | Engineer |
+| <img src="https://github.com/AryaVatsa.png" width="32" style="border-radius:50%" /> | Arya Vatsa | [@AryaVatsa](https://github.com/AryaVatsa) | Engineer |
 | <img src="https://github.com/PohShiSien.png" width="32" style="border-radius:50%" /> | Poh Shi Sien | [@PohShiSien](https://github.com/PohShiSien) | Engineer |
 
 ---
