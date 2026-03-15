@@ -59,3 +59,4 @@ class SimulationConfig:
     latency_ms: float = 0.0
     calibration_window: int = 100
     ui_throttle_ms: int = 50
+    daily_volume_estimate: float = 1e9

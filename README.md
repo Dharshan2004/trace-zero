@@ -72,47 +72,93 @@ A lower shortfall = more value extracted from the liquidation.
 
 ## Architecture
 
-```
-┌──────────────────────────────────────────────────────────────────┐
-│                     Next.js Frontend (port 3000)                 │
-│                                                                  │
-│  ┌────────────┐  ┌──────────────────────────────┐  ┌──────────┐  │
-│  │ Parameters │  │ Price / Trajectory /         │  │   Tear   │  │
-│  │   Panel    │  │ Shortfall (LW Charts)        │  │  Sheet   │  │
-│  │  Latency   │  │ 4 strategies: DUMP/TWAP/     │  │  4-col   │  │
-│  │  Cal Win   │  │ VWAP/AC — purple/yellow/     │  │   Grid   │  │
-│  │   <GO>     │  │ green/red lines              │  │          │  │
-│  └────────────┘  └──────────────────────────────┘  └──────────┘  │
-│  └──────────────────────── Order Blotter ────────────────────────┘│
-│                                                                  │
-│                  useSimulation() WebSocket hook                  │
-└──────────────────────────┬───────────────────────────────────────┘
-                           │  WS: throttled snapshots (50ms default)
-                           │  REST: POST /api/simulation/run
-┌──────────────────────────▼───────────────────────────────────────┐
-│                   FastAPI Backend (port 8000)                    │
-│                                                                  │
-│  ┌──────────────────────────────────────────────────────────┐    │
-│  │                   Simulation Runner                      │    │
-│  │                                                          │    │
-│  │  L2 Parquet Events ──► Rolling Calibration (kappa)       │    │
-│  │        │                      │                          │    │
-│  │        │              ACConfig (σ², ε, γ, η)             │    │
-│  │        │                      │                          │    │
-│  │        ├──► Exchange A ◄── DumpStrategy                  │    │
-│  │        ├──► Exchange B ◄── TWAPStrategy                  │    │
-│  │        ├──► Exchange C ◄── VWAPStrategy                  │    │
-│  │        └──► Exchange D ◄── ACOptimalStrategy             │    │
-│  │                                                          │    │
-│  │  Each exchange: L2 walk-the-book + latency simulation    │    │
-│  │  Isolated SimulatedBook per strategy (impact isolation)  │    │
-│  └──────────────────────────────────────────────────────────┘    │
-│                                                                  │
-│  ┌────────────────────┐                                          │
-│  │  Market Replay     │  Binance L2 .parquet (depth20 + L1)      │
-│  │  collector.py      │  → synthetic 3-level book fallback       │
-│  └────────────────────┘                                          │
-└──────────────────────────────────────────────────────────────────┘
+```mermaid
+flowchart TB
+    subgraph DATA["Data Layer"]
+        direction LR
+        BINANCE["Binance\nWS Stream"]
+        PARQUET[".parquet\ndepth20 + L1"]
+        SYNTHETIC["Synthetic\nGBM Book"]
+        BINANCE -->|"collector.py\ncapture"| PARQUET
+        PARQUET -->|"loader.py\nParquet-first"| EVENTS
+        SYNTHETIC -->|"seed=42\nfallback"| EVENTS
+        EVENTS(["events: list[dict]\nbid/ask/mid/levels\ntimestamp_ms"])
+    end
+
+    subgraph BACKEND["FastAPI Backend  :8000"]
+        direction TB
+        EVENTS --> RUNNER
+
+        subgraph RUNNER["Simulation Runner"]
+            direction TB
+            CAL["calibrate_from_replay()\nσ², ε → γ, η, κ"]
+            ROLLING["Rolling Recal\nevery N ticks"]
+            CAL --> ROLLING
+
+            subgraph EXCHANGES["4 Independent Exchange Instances"]
+                direction LR
+                EA["Exchange A\nSimulatedBook"]
+                EB["Exchange B\nSimulatedBook"]
+                EC["Exchange C\nSimulatedBook"]
+                ED["Exchange D\nSimulatedBook"]
+            end
+
+            DUMP["DumpStrategy\n100% @ t=0"]
+            TWAP["TWAPStrategy\nN equal slices"]
+            VWAP["VWAPStrategy\nU-curve weighted"]
+            AC["ACOptimalStrategy\nsinh trajectory"]
+
+            DUMP --> EA
+            TWAP --> EB
+            VWAP --> EC
+            AC --> ED
+
+            ROLLING -->|"ACConfig"| AC
+            ROLLING -->|"perm impact γ"| EA & EB & EC & ED
+
+            EA -->|"walk_book(qty)\nslippage_bps"| FILLS
+            EB -->|"walk_book(qty)\nslippage_bps"| FILLS
+            EC -->|"walk_book(qty)\nslippage_bps"| FILLS
+            ED -->|"walk_book(qty)\nslippage_bps"| FILLS
+            FILLS(["Fill: price\nqty, slippage_bps\nperm_impact"])
+        end
+
+        THROTTLE["WS Throttle\n50ms default"]
+        RUNNER -->|"every step"| THROTTLE
+        THROTTLE -->|"snapshot msg"| WS_EP
+        RUNNER -->|"on complete"| WS_EP
+        WS_EP["WebSocket\n/simulation/{id}/stream"]
+
+        REST["/simulation/run\nPOST → sim_id"]
+    end
+
+    subgraph FRONTEND["Next.js Frontend  :3000"]
+        direction TB
+        HOOK["useSimulation()\nWS + state"]
+        WS_EP -->|"snapshot / complete\nJSON frames"| HOOK
+        REST -->|"sim_id"| HOOK
+
+        subgraph CHARTS["Lightweight Charts (WebGL)"]
+            PC["PriceChart\nmid / bid / ask"]
+            TC["TrajectoryChart\nshares remaining × 4"]
+            CC["CostChart\ncumul. IS bps × 4"]
+        end
+
+        HOOK --> PC & TC & CC
+        HOOK --> BLOTTER["OrderBlotter\nfills table"]
+        HOOK --> TEARSHEET["TearSheet\nIS · VAR · UTIL\nAC savings vs DUMP/TWAP"]
+
+        FORM["SimulationForm\nsymbol · shares · T · N\nλ · latency · cal window\ndaily vol"] -->|"POST"| REST
+    end
+
+    classDef backend fill:#0d1117,stroke:#30363d,color:#e6edf3
+    classDef frontend fill:#0d1117,stroke:#30363d,color:#e6edf3
+    classDef data fill:#0d1117,stroke:#30363d,color:#e6edf3
+    classDef highlight fill:#001800,stroke:#238636,color:#3fb950
+    classDef strategy fill:#161b22,stroke:#30363d,color:#8b949e
+
+    class AC highlight
+    class DUMP,TWAP,VWAP strategy
 ```
 
 ---
@@ -246,6 +292,59 @@ python scripts/capture_data.py BTCUSDT 60
 
 Files land in `data/` (git-ignored). The UI lists available files automatically via `GET /api/symbols`. Parquet files take priority over JSONL when both exist for the same symbol.
 
+### Using Real Data Effectively
+
+IS ordering in the tear sheet is **market-condition dependent** when real data is loaded:
+
+| Market condition during capture | DUMP IS | TWAP/VWAP/AC IS | Why |
+|---|---|---|---|
+| Price **falls** | Low (best) | High | DUMP sold at peak; later fills are cheaper |
+| Price **rises** | High (worst) | Lower | DUMP sold at trough; TWAP/AC caught the rally |
+| Price **flat** | High (worst) | Lower | Only market impact matters; single large dump pays more |
+
+For a reliable demo with the expected ordering (DUMP worst, AC best), capture during a **low-volatility, flat-to-slightly-rising window** — typically early morning UTC or weekends. Avoid capturing during strong directional moves or news events.
+
+**Verify a capture before presenting:**
+
+```bash
+python3 - << 'EOF'
+import json
+
+events = []
+with open('data/BTCUSDT_60s.jsonl') as f:
+    for line in f:
+        if line.strip():
+            events.append(json.loads(line))
+
+first_mid = (events[0]['bid'] + events[0]['ask']) / 2
+last_mid  = (events[-1]['bid'] + events[-1]['ask']) / 2
+drift_bps = (last_mid - first_mid) / first_mid * 10000
+depth     = sum(float(l[1]) for l in events[0].get('bid_levels', []))
+
+print(f"Events : {len(events)}")
+print(f"Drift  : {drift_bps:+.1f} bps  ({'FLAT ✓' if abs(drift_bps) < 5 else 'RISING ✓' if drift_bps > 0 else 'FALLING ✗ — recapture'})")
+print(f"Depth  : {depth:.3f} BTC/side at tick 0")
+EOF
+```
+
+**Green light**: drift between −5 bps and +15 bps. **Recapture** if drift < −5 bps (falling market means DUMP will show lowest IS).
+
+**Recommended parameters with real data:**
+
+| Parameter | Value | Why |
+|---|---|---|
+| `total_shares` | `1.0` | Real BTC book has ~1–2 BTC total depth per side; larger orders exhaust it and all strategies get identical worst-level fills |
+| `liquidation_time` | `60` | Matches a 60s capture |
+| `num_trades` | `20` | ~3s between child orders |
+| `daily_volume_estimate` | `1000000000` | 1B USD default; increasing this shrinks γ and η, reducing impact differences |
+
+**Guaranteed ordering (synthetic mode):** If you need deterministic DUMP-worst ordering regardless of market conditions, delete the data file — the simulator falls back to a seeded geometric random walk with a flat price path where only market impact matters.
+
+```bash
+rm data/BTCUSDT_60s.jsonl   # or .parquet
+# Restart backend — simulator now runs in synthetic mode
+```
+
 ---
 
 ## Simulation Parameters
@@ -350,6 +449,28 @@ Final message type is `"complete"` with the full `SimulationResult`.
 
 - Almgren, R. & Chriss, N. (2000). *Optimal execution of portfolio transactions.* Journal of Risk, 3(2), 5–39.
 - Almgren, R. (2003). *Optimal execution with nonlinear impact functions and trading-enhanced risk.* Applied Mathematical Finance, 10(1), 1–18.
+
+---
+
+## Built For
+
+<a href="https://projecthub.ntuscds.com/">
+  <img src="https://img.shields.io/badge/SCDS-ProjectHub%2025%2F26-orange?style=flat-square" alt="ProjectHub 25/26" />
+</a>
+
+This project was built as part of the **[ProjectHub Mentorship Program 25/26](https://projecthub.ntuscds.com/)** — a project-based initiative by the **NTU School of Computer Science and Data Science (CCDS) Student Society** that connects students with mentors in computing and data science to build real-world projects and gain industry exposure.
+
+> _Hands-on, project-focused mentorship · Small mentor–mentee groups · Technical growth and career exploration_
+
+---
+
+## Team
+
+| | Name | GitHub | Role |
+|---|------|--------|------|
+| <img src="https://github.com/Dharshan2004.png" width="32" style="border-radius:50%" /> | Kannan Priyadharshan | [@Dharshan2004](https://github.com/Dharshan2004) | Lead Engineer |
+| <img src="https://github.com/AryaVasta.png" width="32" style="border-radius:50%" /> | Arya Vasta | [@AryaVasta](https://github.com/AryaVasta) | Engineer |
+| <img src="https://github.com/PohShiSien.png" width="32" style="border-radius:50%" /> | Poh Shi Sien | [@PohShiSien](https://github.com/PohShiSien) | Engineer |
 
 ---
 

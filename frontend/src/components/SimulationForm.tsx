@@ -21,6 +21,7 @@ interface FormState {
   eta_override: string
   latency_ms: string
   calibration_window: string
+  daily_volume_estimate: string
 }
 
 function Field({ label, value, onChange, type = 'text', placeholder = '', disabled = false }: {
@@ -47,6 +48,7 @@ export default function SimulationForm({ onSubmit, config, status, style }: Prop
     eta_override: '',
     latency_ms: String(config.latency_ms ?? 0),
     calibration_window: String(config.calibration_window ?? 100),
+    daily_volume_estimate: String(config.daily_volume_estimate ?? 1e9),
   })
 
   const isRunning = status === 'running'
@@ -64,6 +66,7 @@ export default function SimulationForm({ onSubmit, config, status, style }: Prop
       latency_ms: parseFloat(form.latency_ms) || 0,
       calibration_window: parseInt(form.calibration_window) || 100,
       ui_throttle_ms: 50,
+      daily_volume_estimate: parseFloat(form.daily_volume_estimate) || 1e9,
     }
     if (form.gamma_override.trim()) { const g = parseFloat(form.gamma_override); if (!isNaN(g)) cfg.gamma_override = g }
     if (form.eta_override.trim()) { const e = parseFloat(form.eta_override); if (!isNaN(e)) cfg.eta_override = e }
@@ -83,6 +86,7 @@ export default function SimulationForm({ onSubmit, config, status, style }: Prop
           <div style={{ color: '#555', fontSize: '10px', marginBottom: '6px' }}>MARKET MICROSTRUCTURE</div>
           <Field label="LATENCY (MS)" value={form.latency_ms} onChange={set('latency_ms')} type="number" placeholder="0" disabled={isRunning} />
           <Field label="CAL WINDOW" value={form.calibration_window} onChange={set('calibration_window')} type="number" placeholder="100" disabled={isRunning} />
+          <Field label="DAILY VOL (USD)" value={form.daily_volume_estimate} onChange={set('daily_volume_estimate')} type="number" placeholder="1000000000" disabled={isRunning} />
           <div style={{ borderTop: '1px solid #222', margin: '8px 0' }} />
           <div style={{ color: '#555', fontSize: '10px', marginBottom: '6px' }}>OPTIONAL OVERRIDES</div>
           <Field label="GAMMA OVERRIDE" value={form.gamma_override} onChange={set('gamma_override')} placeholder="—" disabled={isRunning} />

@@ -14,6 +14,7 @@ export interface SimConfig {
   latency_ms?: number
   calibration_window?: number
   ui_throttle_ms?: number
+  daily_volume_estimate?: number
 }
 
 export interface PricePoint {
@@ -127,7 +128,23 @@ export function useSimulation() {
 
       const { sim_id } = await res.json()
 
-      const ws = new WebSocket(`ws://localhost:8000/api/simulation/${sim_id}/stream`)
+      // In production the WS must connect directly to the backend host because
+      // Vercel serverless functions do not support WebSocket proxying.
+      // NEXT_PUBLIC_API_URL should be set to the backend origin on Vercel
+      // (e.g. https://trace-zero-api.railway.app). Omit the trailing slash.
+      // Locally it is unset and we fall back to the same origin (proxied).
+      const apiUrl = process.env.NEXT_PUBLIC_API_URL
+      let wsHost: string
+      let wsProtocol: string
+      if (apiUrl) {
+        const parsed = new URL(apiUrl)
+        wsProtocol = parsed.protocol === 'https:' ? 'wss:' : 'ws:'
+        wsHost = parsed.host
+      } else {
+        wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+        wsHost = window.location.host
+      }
+      const ws = new WebSocket(`${wsProtocol}//${wsHost}/api/simulation/${sim_id}/stream`)
       wsRef.current = ws
 
       ws.onmessage = (event) => {
@@ -148,10 +165,10 @@ export function useSimulation() {
               const t = Math.floor(msg.timestamp_ms / 1000)
               setTrajectoryData(prev => [...prev, {
                 time: t,
-                dump: msg.strategies.dump?.qty_traded ?? 0,
-                twap: msg.strategies.twap?.qty_traded ?? 0,
-                vwap: msg.strategies.vwap?.qty_traded ?? 0,
-                ac:   msg.strategies.ac?.qty_traded ?? 0,
+                dump: msg.strategies.dump?.shares_remaining ?? 0,
+                twap: msg.strategies.twap?.shares_remaining ?? 0,
+                vwap: msg.strategies.vwap?.shares_remaining ?? 0,
+                ac:   msg.strategies.ac?.shares_remaining ?? 0,
               }])
               setCostData(prev => [...prev, {
                 time: t,
@@ -174,6 +191,25 @@ export function useSimulation() {
                 mid: p.mid,
                 bid: p.bid,
                 ask: p.ask,
+              })))
+            }
+            // Backfill trajectory and cost data from the full result arrays
+            const strats = msg.result?.strategies
+            const stepTs = msg.result?.step_timestamps ?? []
+            if (strats && stepTs.length) {
+              setTrajectoryData(stepTs.map((ts: number, i: number) => ({
+                time: Math.floor(ts / 1000),
+                dump: strats.dump?.trajectory?.[i] ?? 0,
+                twap: strats.twap?.trajectory?.[i] ?? 0,
+                vwap: strats.vwap?.trajectory?.[i] ?? 0,
+                ac:   strats.ac?.trajectory?.[i] ?? 0,
+              })))
+              setCostData(stepTs.map((ts: number, i: number) => ({
+                time: Math.floor(ts / 1000),
+                dump: strats.dump?.cost_curve?.[i] ?? 0,
+                twap: strats.twap?.cost_curve?.[i] ?? 0,
+                vwap: strats.vwap?.cost_curve?.[i] ?? 0,
+                ac:   strats.ac?.cost_curve?.[i] ?? 0,
               })))
             }
             setResult(normalizeResult(msg.result ?? {}))

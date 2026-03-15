@@ -14,11 +14,15 @@ class ACConfig:
     gamma: float        # permanent impact coefficient
     eta: float          # temporary impact coefficient
     epsilon: float      # half-spread (fixed cost per share)
-    sigma2: float       # single-step price variance
+    sigma2: float       # single-step price variance (price² units, for VAR/UTIL display)
     llambda: float      # trader risk aversion
     T: float            # liquidation time (minutes)
     N: int              # number of discrete trades
     shares: float       # total shares to liquidate
+    # Fractional variance per tau (dimensionless), used only for kappa calibration.
+    # Keeps kappa well-scaled regardless of the price level (avoids the sigma²/eta unit
+    # mismatch that degenerates kappa*T >> 1 and collapses AC into a DUMP schedule).
+    sigma2_for_kappa: float = 0.0  # set by calibrate_from_replay; 0 → falls back to sigma2
 
 
 class AlmgrenChriss:
@@ -48,7 +52,12 @@ class AlmgrenChriss:
         if self.eta_hat <= 0:
             self.eta_hat = max(config.eta * 0.01, 1e-12)
 
-        kappa_hat_sq = (config.llambda * config.sigma2) / self.eta_hat
+        # Use the fractional sigma² for kappa if available (avoids unit mismatch).
+        # sigma2 in price² units makes kappa*T ≫ 1 (AC ≈ DUMP) because
+        # price²/eta >> 1 even for small volatility. Fractional sigma² keeps
+        # kappa*T in the ~2–5 range, producing a visually distinct AC schedule.
+        _sigma2_kappa = config.sigma2_for_kappa if config.sigma2_for_kappa > 0 else config.sigma2
+        kappa_hat_sq = (config.llambda * _sigma2_kappa) / self.eta_hat
         self.kappa_hat = np.sqrt(max(kappa_hat_sq, 0.0))
 
         # kappa = arccosh(kappa_hat^2 * tau^2 / 2 + 1) / tau
@@ -196,7 +205,7 @@ class AlmgrenChriss:
         """
         return float(np.sum((trades ** 2) * self.singleStepVariance))
 
-    def recalibrate(self, sigma2: float, epsilon: float) -> None:
+    def recalibrate(self, sigma2: float, epsilon: float, sigma2_for_kappa: float = 0.0) -> None:
         """
         Rolling recalibration: update volatility and half-spread estimates,
         then recompute kappa so the optimal schedule adapts to current
@@ -216,13 +225,16 @@ class AlmgrenChriss:
         self.epsilon = epsilon
         self.config.sigma2 = sigma2
         self.config.epsilon = epsilon
+        if sigma2_for_kappa > 0:
+            self.config.sigma2_for_kappa = sigma2_for_kappa
 
         # Recompute eta_hat with updated epsilon (gamma and eta unchanged)
         self.eta_hat = self.eta - 0.5 * self.gamma * self.tau
         if self.eta_hat <= 0:
             self.eta_hat = max(self.eta * 0.01, 1e-12)
 
-        kappa_hat_sq = (self.llambda * sigma2) / self.eta_hat
+        _sigma2_kappa = self.config.sigma2_for_kappa if self.config.sigma2_for_kappa > 0 else sigma2
+        kappa_hat_sq = (self.llambda * _sigma2_kappa) / self.eta_hat
         self.kappa_hat = np.sqrt(max(kappa_hat_sq, 0.0))
 
         cosh_arg = (self.kappa_hat ** 2 * self.tau ** 2) / 2.0 + 1.0
@@ -312,6 +324,17 @@ def calibrate_from_replay(
 
     sigma2 = max(sigma2, 1e-10)
 
+    # Compute sigma2_for_kappa: fractional variance used only for kappa.
+    # Apply a floor so kappa*T >= target_kappa_T even on flat/synthetic data.
+    # This ensures AC is always visually distinct from TWAP (front-loaded) and
+    # from DUMP (not all-at-once), regardless of measured price volatility.
+    target_kappa_T = 2.5
+    tau_est = T / N
+    eta_hat_est = max(eta - 0.5 * gamma * tau_est, eta * 0.01)
+    # kappa ≈ kappa_hat for small kappa*tau; kappa_hat^2 = lambda*sigma2_kappa/eta_hat
+    min_sigma2_for_kappa = (target_kappa_T / T) ** 2 * eta_hat_est / llambda
+    sigma2_for_kappa = max(sigma2_per_tau, min_sigma2_for_kappa)
+
     return ACConfig(
         gamma=gamma,
         eta=eta,
@@ -321,4 +344,5 @@ def calibrate_from_replay(
         T=T,
         N=N,
         shares=shares,
+        sigma2_for_kappa=sigma2_for_kappa,
     )

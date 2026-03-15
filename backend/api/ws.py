@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 from typing import Any
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
@@ -76,7 +77,7 @@ async def simulation_stream(websocket: WebSocket, sim_id: str) -> None:
                 break
 
             try:
-                await websocket.send_text(json.dumps(message, default=_json_default))
+                await websocket.send_text(json.dumps(_sanitize(message), default=_json_default))
             except WebSocketDisconnect:
                 break
 
@@ -95,10 +96,22 @@ async def simulation_stream(websocket: WebSocket, sim_id: str) -> None:
             pass
 
 
+def _sanitize(obj: Any) -> Any:
+    """Recursively replace NaN/Inf floats with 0 so JSON.parse never fails."""
+    if isinstance(obj, float):
+        return 0.0 if (math.isnan(obj) or math.isinf(obj)) else obj
+    if isinstance(obj, dict):
+        return {k: _sanitize(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_sanitize(v) for v in obj]
+    return obj
+
+
 def _json_default(obj: Any) -> Any:
-    """Fallback JSON serializer for non-standard types."""
+    """Fallback JSON serializer for non-standard types (e.g. numpy scalars)."""
     if hasattr(obj, "__float__"):
-        return float(obj)
+        v = float(obj)
+        return 0.0 if (math.isnan(v) or math.isinf(v)) else v
     if hasattr(obj, "__int__"):
         return int(obj)
     return str(obj)

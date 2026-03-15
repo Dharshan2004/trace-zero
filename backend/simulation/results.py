@@ -5,7 +5,7 @@ StrategyResult holds the per-strategy metrics. SimulationResult is the
 top-level object returned by the runner and serialized for the API.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from backend.engine.order import Fill
@@ -92,6 +92,7 @@ class SimulationResult:
     price_series: list[dict]
     ac_savings_vs_dump_bps: float
     ac_savings_vs_twap_bps: float
+    step_timestamps: list[int] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize to a JSON-safe nested dict."""
@@ -114,4 +115,5 @@ class SimulationResult:
             "price_series": self.price_series,
             "ac_savings_vs_dump_bps": self.ac_savings_vs_dump_bps,
             "ac_savings_vs_twap_bps": self.ac_savings_vs_twap_bps,
+            "step_timestamps": self.step_timestamps,
         }

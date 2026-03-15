@@ -44,6 +44,7 @@ class SimulationRunRequest(BaseModel):
     latency_ms: float = Field(default=0.0, ge=0.0, description="Network round-trip latency in ms")
     calibration_window: int = Field(default=100, ge=0, description="Rolling vol window size (0=static)")
     ui_throttle_ms: int = Field(default=50, ge=10, description="Min ms between WebSocket snapshots")
+    daily_volume_estimate: float = Field(default=1e9, gt=0, description="Estimated daily volume (USD)")
 
 
 class CaptureRequest(BaseModel):
@@ -155,6 +156,7 @@ async def start_simulation(
         latency_ms=body.latency_ms,
         calibration_window=body.calibration_window,
         ui_throttle_ms=body.ui_throttle_ms,
+        daily_volume_estimate=body.daily_volume_estimate,
     )
 
     _sim_store[sim_id] = asyncio.Queue()

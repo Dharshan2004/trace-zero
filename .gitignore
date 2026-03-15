@@ -12,13 +12,14 @@ dist/
 venv/
 env/
 .env
+!.env.example
 
 .claude/
-data/
 
-# Market data captures (keep .gitkeep, ignore actual data)
-data/*.jsonl
-data/*.json
+# Market data captures — ignored by default.
+# To commit a pre-captured file for deployment, run:
+#   git add -f data/BTCUSDT_60s.parquet
+data/
 !data/.gitkeep
 
 # Pytest / coverage

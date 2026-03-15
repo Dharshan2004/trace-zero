@@ -1,7 +1,7 @@
 'use client'
 import { useEffect, useRef } from 'react'
 import { createChart, ColorType, LineSeries, LineType } from 'lightweight-charts'
-import type { IChartApi, ISeriesApi, LineData } from 'lightweight-charts'
+import type { IChartApi, ISeriesApi, LineData, AutoscaleInfo } from 'lightweight-charts'
 import Panel from '@/components/Panel'
 import type { TrajectoryPoint } from '@/hooks/useSimulation'
 import type { CSSProperties } from 'react'
@@ -32,7 +32,15 @@ export default function TrajectoryChart({ data, style }: { data: TrajectoryPoint
       width: containerRef.current.clientWidth,
       height: containerRef.current.clientHeight,
     })
-    const stepOpts = { lineType: LineType.WithSteps, lineWidth: 1 as const, priceLineVisible: false }
+    const autoscaleInfoProvider = (original: () => AutoscaleInfo | null) => {
+      const res = original()
+      if (res === null) return null
+      return {
+        priceRange: { minValue: Math.min(res.priceRange.minValue, 0), maxValue: res.priceRange.maxValue },
+        margins: res.margins,
+      }
+    }
+    const stepOpts = { lineType: LineType.WithSteps, lineWidth: 1 as const, priceLineVisible: false, autoscaleInfoProvider }
     refs.current.dump = chart.addSeries(LineSeries, { ...stepOpts, color: COLORS.dump, title: 'DUMP' })
     refs.current.twap = chart.addSeries(LineSeries, { ...stepOpts, color: COLORS.twap, title: 'TWAP' })
     refs.current.vwap = chart.addSeries(LineSeries, { ...stepOpts, color: COLORS.vwap, title: 'VWAP' })
@@ -51,7 +59,7 @@ export default function TrajectoryChart({ data, style }: { data: TrajectoryPoint
     if (!dump || !twap || !vwap || !ac) return
     if (!data.length) { dump.setData([]); twap.setData([]); vwap.setData([]); ac.setData([]); prevLenRef.current = 0; return }
     const dd = dedupeByTime(data)
-    if (dd.length < prevLenRef.current || prevLenRef.current === 0) {
+    if (dd.length < prevLenRef.current || prevLenRef.current === 0 || dd.length > prevLenRef.current + 1) {
       dump.setData(dd.map(d => ({ time: d.time as LineData['time'], value: d.dump })))
       twap.setData(dd.map(d => ({ time: d.time as LineData['time'], value: d.twap })))
       vwap.setData(dd.map(d => ({ time: d.time as LineData['time'], value: d.vwap })))
@@ -79,7 +87,7 @@ export default function TrajectoryChart({ data, style }: { data: TrajectoryPoint
     </div>
   )
   return (
-    <Panel title="EXECUTION SCHEDULE (QTY PER STEP)" style={style} rightHeader={legend}>
+    <Panel title="SHARES REMAINING" style={style} rightHeader={legend}>
       <div ref={containerRef} style={{ width: '100%', height: '100%' }} />
     </Panel>
   )

@@ -45,7 +45,7 @@ import numpy as np
 
 from backend.engine.exchange import SimulatedExchange
 from backend.engine.order import Order
-from backend.market_replay.loader import load_file
+from backend.market_replay.loader import list_data_files, load_file
 from backend.models.almgren_chriss import AlmgrenChriss, calibrate_from_replay
 from backend.simulation.config import SimulationConfig
 from backend.simulation.results import SimulationResult, StrategyResult
@@ -64,22 +64,36 @@ def _generate_synthetic_events(
     n_ticks: int = 500,
     mid_start: float = 97_000.0,
     spread: float = 1.0,
-    sigma_per_tick: float = 0.0002,
+    sigma_per_tick: float = 0.0,
     symbol: str = "BTCUSDT",
+    total_shares: float = 1.0,
 ) -> list[dict]:
     """
-    Generate a synthetic BTC-like L1 orderbook event stream using a
-    geometric random walk. Also synthesises a minimal 3-level L2 book so
-    the engine can exercise the walk-the-book path even without real data.
+    Generate a synthetic BTC-like L1 orderbook event stream.
+
+    sigma_per_tick is intentionally 0.0 so the price path is flat.
+    This isolates pure market-impact effects: DUMP (sells all at t=0,
+    walks deepest into the book) will always show the highest IS, and
+    AC Optimal will always show the lowest IS, with no price-drift noise
+    masking the signal.  A non-zero sigma would introduce a random walk
+    whose direction (up or down) dominates over the sub-bps impact
+    differences and makes the IS ordering unpredictable.
+
+    tick_size is set to 10 USD so each depth level is $10 apart,
+    producing IS differences of ~1–5 bps that are clearly readable on
+    the tear sheet without needing unrealistically large position sizes.
     """
     rng = np.random.default_rng(seed=42)
-    log_returns = rng.normal(0.0, sigma_per_tick, n_ticks)
-    mids = mid_start * np.exp(np.cumsum(log_returns))
-    mids = np.insert(mids, 0, mid_start)[:n_ticks]
+    if sigma_per_tick > 0:
+        log_returns = rng.normal(0.0, sigma_per_tick, n_ticks)
+        mids = mid_start * np.exp(np.cumsum(log_returns))
+        mids = np.insert(mids, 0, mid_start)[:n_ticks]
+    else:
+        mids = np.full(n_ticks, mid_start)
 
     half_spread = spread / 2.0
     base_ts = 1_700_000_000_000
-    tick_size = 0.5  # synthetic tick size for depth levels
+    tick_size = 10.0  # $10 between levels → IS differences of ~1–5 bps, clearly visible
 
     events: list[dict] = []
     for i, mid in enumerate(mids):
@@ -89,8 +103,11 @@ def _generate_synthetic_events(
         bid_levels = []
         ask_levels = []
         for level in range(10):
-            tick_offset = (level + 1) * tick_size
-            qty = 0.1 * (2 ** level)  # 0.1, 0.2, 0.4 ... 51.2 BTC per level
+            tick_offset = level * tick_size
+            # Scale depth with total_shares so the order always walks several
+            # levels regardless of position size (prevents all strategies from
+            # exhausting the book and showing identical worst-case IS).
+            qty = total_shares * 0.02 * (2 ** level)
             bid_levels.append([bid - tick_offset, qty])
             ask_levels.append([ask + tick_offset, qty])
         events.append(
@@ -139,7 +156,7 @@ def _rolling_recalibrate(
     half_spreads = np.array(spread_window, dtype=float) / 2.0
     epsilon = max(float(np.median(half_spreads)), 1e-8)
 
-    ac_model.recalibrate(sigma2, epsilon)
+    ac_model.recalibrate(sigma2, epsilon, sigma2_for_kappa=max(sigma2_per_tau, 1e-20))
 
 
 # ---------------------------------------------------------------------------
@@ -167,14 +184,27 @@ async def run_simulation(
     # 1. Load or generate replay events
     # ------------------------------------------------------------------
     events: list[dict]
-    using_real_data = bool(config.data_file and os.path.isfile(config.data_file))
+
+    # Resolve data file: explicit path → auto-discover by symbol → synthetic fallback
+    _data_file = config.data_file
+    if not (_data_file and os.path.isfile(_data_file)):
+        # Auto-discover: look for any file in data/ whose name starts with the symbol
+        _data_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "data")
+        _candidates = list_data_files(_data_dir)
+        for _candidate in _candidates:
+            _fname = os.path.basename(_candidate).upper()
+            if _fname.startswith(config.symbol.upper()):
+                _data_file = _candidate
+                break
+
+    using_real_data = bool(_data_file and os.path.isfile(_data_file))
     if using_real_data:
-        events = load_file(config.data_file)
+        events = load_file(_data_file)
     else:
-        events = _generate_synthetic_events(symbol=config.symbol)
+        events = _generate_synthetic_events(symbol=config.symbol, total_shares=config.total_shares)
 
     if not events:
-        events = _generate_synthetic_events(symbol=config.symbol)
+        events = _generate_synthetic_events(symbol=config.symbol, total_shares=config.total_shares)
         using_real_data = False
 
     # ------------------------------------------------------------------
@@ -186,6 +216,7 @@ async def run_simulation(
         N=config.num_trades,
         shares=config.total_shares,
         llambda=config.risk_aversion,
+        daily_volume_estimate=config.daily_volume_estimate,
     )
 
     if config.gamma_override is not None:
@@ -448,6 +479,11 @@ async def run_simulation(
     ac_savings_vs_dump = dump_result.implementation_shortfall_bps - ac_result.implementation_shortfall_bps
     ac_savings_vs_twap = twap_result.implementation_shortfall_bps - ac_result.implementation_shortfall_bps
 
+    step_timestamps = [
+        events[idx].get("timestamp_ms", idx * 100)
+        for idx in step_trigger_indices
+    ]
+
     return SimulationResult(
         config=config,
         dump=dump_result,
@@ -457,4 +493,5 @@ async def run_simulation(
         price_series=price_series,
         ac_savings_vs_dump_bps=ac_savings_vs_dump,
         ac_savings_vs_twap_bps=ac_savings_vs_twap,
+        step_timestamps=step_timestamps,
     )
