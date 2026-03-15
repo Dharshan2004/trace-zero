@@ -48,7 +48,7 @@ AC parameters are derived directly from the replay feed and updated dynamically:
 
 When L2 depth data is available, the matching engine replaces the analytical temporary impact formula with exact multi-level slippage:
 
-$$\text{fill\_price}(q) = \frac{\sum_{\ell} p_\ell \cdot \min(q_\ell,\, q_{\text{remaining}})}{\sum_{\ell} \min(q_\ell,\, q_{\text{remaining}})}$$
+$$\bar{p}(q) = \frac{\displaystyle\sum_{\ell}\, p_\ell \cdot f_\ell}{\displaystyle\sum_{\ell}\, f_\ell}, \qquad f_\ell = \min\!\left(q_\ell,\; q - \sum_{j < \ell} f_j\right)$$
 
 Orders consume resting bid-side volume level-by-level. If the order size exceeds total resting depth, the remainder fills at the worst available price. This models real institutional execution far more accurately than the flat-book assumption.
 
@@ -76,13 +76,13 @@ A lower shortfall = more value extracted from the liquidation.
 flowchart TB
     subgraph DATA["Data Layer"]
         direction LR
-        BINANCE["Binance\nWS Stream"]
-        PARQUET[".parquet\ndepth20 + L1"]
-        SYNTHETIC["Synthetic\nGBM Book"]
-        BINANCE -->|"collector.py\ncapture"| PARQUET
-        PARQUET -->|"loader.py\nParquet-first"| EVENTS
-        SYNTHETIC -->|"seed=42\nfallback"| EVENTS
-        EVENTS(["events: list[dict]\nbid/ask/mid/levels\ntimestamp_ms"])
+        BINANCE["Binance WS Stream"]
+        PARQUET[".parquet — depth20 + L1"]
+        SYNTHETIC["Synthetic GBM Book"]
+        BINANCE -->|"collector.py capture"| PARQUET
+        PARQUET -->|"loader.py Parquet-first"| EVENTS
+        SYNTHETIC -->|"seed=42 fallback"| EVENTS
+        EVENTS(["events: list[dict]<br/>bid/ask/mid/levels<br/>timestamp_ms"])
     end
 
     subgraph BACKEND["FastAPI Backend  :8000"]
@@ -91,22 +91,22 @@ flowchart TB
 
         subgraph RUNNER["Simulation Runner"]
             direction TB
-            CAL["calibrate_from_replay()\nσ², ε → γ, η, κ"]
-            ROLLING["Rolling Recal\nevery N ticks"]
+            CAL["calibrate_from_replay()<br/>σ², ε → γ, η, κ"]
+            ROLLING["Rolling Recal<br/>every N ticks"]
             CAL --> ROLLING
 
             subgraph EXCHANGES["4 Independent Exchange Instances"]
                 direction LR
-                EA["Exchange A\nSimulatedBook"]
-                EB["Exchange B\nSimulatedBook"]
-                EC["Exchange C\nSimulatedBook"]
-                ED["Exchange D\nSimulatedBook"]
+                EA["Exchange A<br/>SimulatedBook"]
+                EB["Exchange B<br/>SimulatedBook"]
+                EC["Exchange C<br/>SimulatedBook"]
+                ED["Exchange D<br/>SimulatedBook"]
             end
 
-            DUMP["DumpStrategy\n100% @ t=0"]
-            TWAP["TWAPStrategy\nN equal slices"]
-            VWAP["VWAPStrategy\nU-curve weighted"]
-            AC["ACOptimalStrategy\nsinh trajectory"]
+            DUMP["DumpStrategy<br/>100% @ t=0"]
+            TWAP["TWAPStrategy<br/>N equal slices"]
+            VWAP["VWAPStrategy<br/>U-curve weighted"]
+            AC["ACOptimalStrategy<br/>sinh trajectory"]
 
             DUMP --> EA
             TWAP --> EB
@@ -116,39 +116,39 @@ flowchart TB
             ROLLING -->|"ACConfig"| AC
             ROLLING -->|"perm impact γ"| EA & EB & EC & ED
 
-            EA -->|"walk_book(qty)\nslippage_bps"| FILLS
-            EB -->|"walk_book(qty)\nslippage_bps"| FILLS
-            EC -->|"walk_book(qty)\nslippage_bps"| FILLS
-            ED -->|"walk_book(qty)\nslippage_bps"| FILLS
-            FILLS(["Fill: price\nqty, slippage_bps\nperm_impact"])
+            EA -->|"walk_book(qty)<br/>slippage_bps"| FILLS
+            EB -->|"walk_book(qty)<br/>slippage_bps"| FILLS
+            EC -->|"walk_book(qty)<br/>slippage_bps"| FILLS
+            ED -->|"walk_book(qty)<br/>slippage_bps"| FILLS
+            FILLS(["Fill: price<br/>qty, slippage_bps<br/>perm_impact"])
         end
 
-        THROTTLE["WS Throttle\n50ms default"]
+        THROTTLE["WS Throttle<br/>50ms default"]
         RUNNER -->|"every step"| THROTTLE
         THROTTLE -->|"snapshot msg"| WS_EP
         RUNNER -->|"on complete"| WS_EP
-        WS_EP["WebSocket\n/simulation/{id}/stream"]
+        WS_EP["WebSocket<br/>/simulation/{id}/stream"]
 
-        REST["/simulation/run\nPOST → sim_id"]
+        REST["/simulation/run<br/>POST → sim_id"]
     end
 
     subgraph FRONTEND["Next.js Frontend  :3000"]
         direction TB
-        HOOK["useSimulation()\nWS + state"]
-        WS_EP -->|"snapshot / complete\nJSON frames"| HOOK
+        HOOK["useSimulation()<br/>WS + state"]
+        WS_EP -->|"snapshot / complete<br/>JSON frames"| HOOK
         REST -->|"sim_id"| HOOK
 
         subgraph CHARTS["Lightweight Charts (WebGL)"]
-            PC["PriceChart\nmid / bid / ask"]
-            TC["TrajectoryChart\nshares remaining × 4"]
-            CC["CostChart\ncumul. IS bps × 4"]
+            PC["PriceChart<br/>mid / bid / ask"]
+            TC["TrajectoryChart<br/>shares remaining × 4"]
+            CC["CostChart<br/>cumul. IS bps × 4"]
         end
 
         HOOK --> PC & TC & CC
-        HOOK --> BLOTTER["OrderBlotter\nfills table"]
-        HOOK --> TEARSHEET["TearSheet\nIS · VAR · UTIL\nAC savings vs DUMP/TWAP"]
+        HOOK --> BLOTTER["OrderBlotter<br/>fills table"]
+        HOOK --> TEARSHEET["TearSheet<br/>IS · VAR · UTIL<br/>AC savings vs DUMP/TWAP"]
 
-        FORM["SimulationForm\nsymbol · shares · T · N\nλ · latency · cal window\ndaily vol"] -->|"POST"| REST
+        FORM["SimulationForm<br/>symbol · shares · T · N<br/>λ · latency · cal window<br/>daily vol"] -->|"POST"| REST
     end
 
     classDef backend fill:#0d1117,stroke:#30363d,color:#e6edf3
